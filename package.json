@@ -1,0 +1,17 @@
+{
+  "name": "odds-oracle",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Football odds scraping and betting review workbook scripts.",
+  "scripts": {
+    "build:review-template": "node scripts/build_world_cup_review_template.mjs",
+    "scrape:titan007": "python3 scripts/scrape_titan007_worldcup_odds.py",
+    "build:odds-workbook": "node scripts/build_titan007_worldcup_odds_workbook.mjs",
+    "update:staking-logic": "node scripts/update_prediction_staking_logic.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
+
