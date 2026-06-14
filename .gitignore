@@ -7,9 +7,3 @@ __pycache__/
 
 node_modules
 node_modules/
-outputs/
-
-# Local betting records, scraped snapshots, workbook backups, previews, and private notes.
-data/*
-!data/.gitkeep
-!data/README.md

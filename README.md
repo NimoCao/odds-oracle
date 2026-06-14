@@ -1,55 +1,74 @@
 # odds-oracle
 
-足球赔率抓取、赛前建议记录和投注复盘模板工具。
+通用足球投注推荐与复盘工作台。
 
-这个仓库只放公开安全的代码、文档和空模板。真实下注记录、赔率快照、预测写回、复盘文件、截图预览和备份文件统一放在 `data/`，并且默认被 `.gitignore` 排除。
+用户只需要感知两件事：两个 Codex skill，三张 output 表。模板和脚本只是支撑它们工作的底层文件。
 
-## What is included
+## Skills
 
-- `scripts/scrape_titan007_worldcup_odds.py`：抓取 Titan007 2026 世界杯赛程和赔率快照。
-- `scripts/build_titan007_worldcup_odds_workbook.mjs`：把抓取到的 CSV/JSON 生成赔率工作簿和空的比赛预测表。
-- `scripts/build_world_cup_review_template.mjs`：生成空的世界杯投注复盘模板。
-- `scripts/update_prediction_staking_logic.mjs`：为比赛预测表补充/刷新资金分配和风控公式。
-- `templates/`：可公开提交的空模板。
-- `data/`：本地私有数据目录，不提交真实内容。
+- `football-betting-recommender`
+  - 赛前推荐、滚球推荐、亚盘/让球、大小球、胜平负、串关、波胆、对冲、止盈、补仓判断。
+  - 写入 `足球数据表.xlsx` 和 `足球推荐表.xlsx`。
+  - 源文件在 `skills/football-betting-recommender/`。
 
-## Data privacy
+- `football-betting-review`
+  - 投注截图记录、文字票据入账、结算更新、策略复盘、ROI/纪律统计。
+  - 写入 `足球复盘表.xlsx`。
+  - 源文件在 `skills/football-betting-review/`。
 
-Do not commit:
+`~/.codex/skills/` 下保留同名发现目录，目录内的 `SKILL.md`、`agents`、`references` 链接到本仓库的 `skills/` 源文件，方便 Codex 自动发现。
 
-- 真实投注明细、盈亏、金额、赔率、复盘结论
-- 已写入赛前建议的预测表
-- Titan007 抓取快照、CSV、JSON、预览图片
-- 工作簿备份文件
-- 带具体下注建议或个人判断记录的私有脚本
+## Output Tables
 
-这些文件都应放在 `data/` 下。公开仓库只保留空模板和可复用脚本。
+用户最终使用的三张表都在 `outputs/football_betting/`：
 
-## Usage
+- `足球数据表.xlsx`
+- `足球推荐表.xlsx`
+- `足球复盘表.xlsx`
 
-生成空复盘模板：
+这些 output 表是日常使用入口，会随着推荐和复盘持续更新。
+仓库里提交的是空白初始 output 表；真实下注数据写入后，提交前需要自行确认是否包含隐私内容。
 
-```bash
-npm run build:review-template
+## Templates
+
+空表模板放在 `templates/`：
+
+- `足球数据表模板.xlsx`
+- `足球推荐表模板.xlsx`
+- `足球复盘表模板.xlsx`
+
+模板只用于初始化，不在日常流程里直接编辑。
+
+## Repository Layout
+
+```text
+skills/
+  football-betting-recommender/
+  football-betting-review/
+scripts/
+  football_tables_tool.mjs
+templates/
+  足球数据表模板.xlsx
+  足球推荐表模板.xlsx
+  足球复盘表模板.xlsx
+outputs/football_betting/
+  足球数据表.xlsx
+  足球推荐表.xlsx
+  足球复盘表.xlsx
 ```
 
-抓取 Titan007 赔率数据：
+## Tool
+
+统一写表和初始化工具：
 
 ```bash
-npm run scrape:titan007
+node scripts/football_tables_tool.mjs init
 ```
 
-基于 `data/titan007_worldcup_2026_odds/` 里的抓取结果生成工作簿：
+也可以通过 npm：
 
 ```bash
-npm run build:odds-workbook
+npm run init:football-tables
 ```
 
-刷新比赛预测表的资金分配和风控公式：
-
-```bash
-npm run update:staking-logic
-```
-
-The workbook builders use `@oai/artifact-tool`, which is available in the Codex workspace runtime used to create this project.
-
+两个 skill 写表时都必须调用 `scripts/football_tables_tool.mjs`，不要绕过它直接改工作簿。

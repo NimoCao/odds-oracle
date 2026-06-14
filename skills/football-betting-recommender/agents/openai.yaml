@@ -1,0 +1,4 @@
+interface:
+  display_name: "足球投注推荐"
+  short_description: "赛前和滚球推荐总入口，根据场景选择方法并按用户策略输出投注建议。"
+  default_prompt: "按我的策略分析这场比赛，给出赛前或滚球投注建议。"
