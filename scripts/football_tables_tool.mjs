@@ -1,13 +1,60 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { FileBlob, SpreadsheetFile, Workbook } from "@oai/artifact-tool";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const templateDir = path.join(repoRoot, "templates");
 const outputDir = path.join(repoRoot, "outputs", "football_betting");
 const rowCount = 300;
+
+function asImportSpecifier(specifier) {
+  return path.isAbsolute(specifier) ? pathToFileURL(specifier).href : specifier;
+}
+
+async function loadArtifactTool() {
+  const bundledArtifactTool = path.join(
+    os.homedir(),
+    ".cache",
+    "codex-runtimes",
+    "codex-primary-runtime",
+    "dependencies",
+    "node",
+    "node_modules",
+    "@oai",
+    "artifact-tool",
+    "dist",
+    "artifact_tool.mjs",
+  );
+  const candidates = [
+    process.env.ODDS_ORACLE_ARTIFACT_TOOL_MODULE,
+    "@oai/artifact-tool",
+    bundledArtifactTool,
+  ].filter(Boolean);
+  const failures = [];
+  for (const candidate of candidates) {
+    const specifier = asImportSpecifier(candidate);
+    try {
+      const artifactTool = await import(specifier);
+      if (artifactTool.FileBlob && artifactTool.SpreadsheetFile && artifactTool.Workbook) {
+        return artifactTool;
+      }
+      failures.push(`${candidate}: missing expected workbook exports`);
+    } catch (error) {
+      failures.push(`${candidate}: ${error.code ?? error.name} ${error.message}`);
+    }
+  }
+  throw new Error(
+    [
+      "Unable to load @oai/artifact-tool.",
+      "Install it in node_modules or set ODDS_ORACLE_ARTIFACT_TOOL_MODULE to its module path.",
+      ...failures.map((failure) => `- ${failure}`),
+    ].join("\n"),
+  );
+}
+
+const { FileBlob, SpreadsheetFile, Workbook } = await loadArtifactTool();
 
 const TABLES = {
   data: {
@@ -509,6 +556,8 @@ const ALIASES = {
     "投注金额": ["stake", "投注金额", "stake"],
     "投注赔率": ["odds", "投注赔率", "odds"],
     "投注结果": ["result", "投注结果", "result"],
+    "结算金额": ["settlement_amount", "结算金额", "settlement", "payout"],
+    "投注收益": ["profit", "投注收益", "收益"],
     "赛前依据": ["pre_match_notes", "赛前依据"],
     "赛后复盘": ["post_match_review", "赛后复盘"],
     "备注": ["notes", "备注"],
@@ -527,6 +576,30 @@ const EMPTY_ROW_KEYS = {
   review: ["比赛", "对阵"],
 };
 
+function numericValue(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function rounded(value) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function reviewSettlement(result, stake, odds, existingSettlement) {
+  if (!result || result === "未结算") return "";
+  if (typeof existingSettlement === "number" && Number.isFinite(existingSettlement)) return existingSettlement;
+  if (result === "赢") return rounded(stake * odds);
+  if (result === "输") return 0;
+  if (result === "走水" || result === "取消") return stake;
+  if (result === "半赢") return rounded(stake * (1 + (odds - 1) / 2));
+  if (result === "半输") return rounded(stake * 0.5);
+  return "";
+}
+
 function normalizeRecord(tableKey, raw) {
   const aliases = ALIASES[tableKey];
   const normalized = {};
@@ -534,6 +607,17 @@ function normalizeRecord(tableKey, raw) {
     normalized[header] = firstPresent(raw, names);
   }
   return normalized;
+}
+
+function loadUpdate() {
+  const updatesJson = argValue("--updates-json") ?? argValue("--records-json");
+  if (!updatesJson) throw new Error("Provide --updates-json with a JSON object.");
+  const parsed = JSON.parse(updatesJson);
+  if (Array.isArray(parsed)) {
+    if (parsed.length !== 1) throw new Error("--updates-json must be a single JSON object.");
+    return parsed[0];
+  }
+  return parsed;
 }
 
 async function ensureOutput(tableKey) {
@@ -544,6 +628,44 @@ async function ensureOutput(tableKey) {
     await initTables();
   }
   return table.output;
+}
+
+function recalculateReviewLedger(workbook) {
+  const params = workbook.worksheets.getItem("参数");
+  const startingBankroll = numericValue(params.getRange("B3:B3").values[0][0]) ?? 1000;
+  const sheet = workbook.worksheets.getItem(TABLES.review.sheet);
+  const headerValues = sheet.getRange("A2:AZ2").values[0].filter((value) => value !== null && value !== "");
+  const col = Object.fromEntries(headerValues.map((header, index) => [header, index]));
+  let cumulativeProfit = 0;
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+    const row = sheet.getRangeByIndexes(2 + rowIndex, 0, 1, headerValues.length).values[0];
+    const stake = numericValue(row[col["投注金额"]]);
+    const odds = numericValue(row[col["投注赔率"]]);
+    const result = row[col["投注结果"]];
+    const hasBet = row[col["比赛"]] || row[col["对阵"]] || row[col["投注内容"]];
+    if (!hasBet && stake === undefined) continue;
+
+    const preBankroll = rounded(startingBankroll + cumulativeProfit);
+    const settlement = stake === undefined || odds === undefined
+      ? ""
+      : reviewSettlement(result, stake, odds, row[col["结算金额"]]);
+    const profit = typeof settlement === "number" && stake !== undefined ? rounded(settlement - stake) : "";
+    if (typeof profit === "number") cumulativeProfit = rounded(cumulativeProfit + profit);
+    const rollingBankroll = typeof profit === "number" ? rounded(startingBankroll + cumulativeProfit) : "";
+
+    const updates = {
+      "投注前本金": preBankroll,
+      "资金占比": stake === undefined ? "" : stake / preBankroll,
+      "潜在返还": stake === undefined || odds === undefined ? "" : rounded(stake * odds),
+      "结算金额": settlement,
+      "投注收益": profit,
+      "ROI": typeof profit === "number" && stake ? profit / stake : "",
+      "滚动本金": rollingBankroll,
+    };
+    for (const [header, value] of Object.entries(updates)) {
+      sheet.getRangeByIndexes(2 + rowIndex, col[header], 1, 1).values = [[value]];
+    }
+  }
 }
 
 async function appendRecords(tableKey) {
@@ -570,12 +692,44 @@ async function appendRecords(tableKey) {
       sheet.getRangeByIndexes(startRow - 1 + recordIndex, colIndex, 1, 1).values = [[value]];
     });
   });
+  if (tableKey === "review") recalculateReviewLedger(workbook);
   await saveWorkbook(workbook, workbookPath);
   return {
     table: table.label,
     workbook: workbookPath,
     appendedRows: records.map((_, index) => startRow + index),
     count: records.length,
+  };
+}
+
+async function updateRow(tableKey) {
+  const table = TABLES[tableKey];
+  const row = Number(argValue("--row"));
+  if (!Number.isInteger(row) || row < 3 || row >= 3 + rowCount) {
+    throw new Error(`--row must be an integer from 3 to ${2 + rowCount}.`);
+  }
+  const workbookPath = argValue("--workbook") ?? await ensureOutput(tableKey);
+  const updates = normalizeRecord(tableKey, loadUpdate());
+  const blob = await FileBlob.load(workbookPath);
+  const workbook = await SpreadsheetFile.importXlsx(blob);
+  const sheet = workbook.worksheets.getItem(table.sheet);
+  const headerValues = sheet.getRange("A2:AZ2").values[0].filter((value) => value !== null && value !== "");
+  const updatedFields = [];
+  for (const [header, value] of Object.entries(updates)) {
+    if (value === undefined || value === null || value === "") continue;
+    const colIndex = headerValues.indexOf(header);
+    if (colIndex < 0) throw new Error(`${table.label} has no column named ${header}.`);
+    sheet.getRangeByIndexes(row - 1, colIndex, 1, 1).values = [[value]];
+    updatedFields.push(header);
+  }
+  if (updatedFields.length === 0) throw new Error("No non-empty update fields were provided.");
+  if (tableKey === "review") recalculateReviewLedger(workbook);
+  await saveWorkbook(workbook, workbookPath);
+  return {
+    table: table.label,
+    workbook: workbookPath,
+    updatedRow: row,
+    updatedFields,
   };
 }
 
@@ -588,11 +742,16 @@ async function main() {
     const tableKey = argValue("--table");
     if (!TABLES[tableKey]) throw new Error("--table must be one of: data, recommendation, review");
     result = await appendRecords(tableKey);
+  } else if (action === "update") {
+    const tableKey = argValue("--table");
+    if (!TABLES[tableKey]) throw new Error("--table must be one of: data, recommendation, review");
+    result = await updateRow(tableKey);
   } else {
     result = {
       usage: [
         "node scripts/football_tables_tool.mjs init [--force]",
         "node scripts/football_tables_tool.mjs append --table data|recommendation|review --records-json '[{...}]'",
+        "node scripts/football_tables_tool.mjs update --table data|recommendation|review --row 3 --updates-json '{...}'",
       ],
       tables: TABLES,
     };
